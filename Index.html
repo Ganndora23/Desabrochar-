@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rosa de Partículas</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+
+    let W = 0;
+    let H = 0;
+    let DPR = 1;
+    let SCALE = 1;
+
+    let particles = [];
+    let startTime = 0;
+
+    const STEM_DURATION = 2200;
+    const BLOOM_START = 1700;
+    const BLOOM_DURATION = 4200;
+    const HOLD_DURATION = 2600;
+    const RESTART_TOTAL = BLOOM_START + BLOOM_DURATION + HOLD_DURATION;
+
+    function rand(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function smoothstep(t) {
+      t = clamp(t, 0, 1);
+      return t * t * (3 - 2 * t);
+    }
+
+    function easeOutCubic(t) {
+      return 1 - Math.pow(1 - t, 3);
+    }
+
+    function resize() {
+      DPR = Math.max(1, window.devicePixelRatio || 1);
+      W = window.innerWidth;
+      H = window.innerHeight;
+      canvas.width = W * DPR;
+      canvas.height = H * DPR;
+      canvas.style.width = W + "px";
+      canvas.style.height = H + "px";
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+      SCALE = Math.min(W, H) / 760;
+      buildScene();
+    }
+
+    function stemX(s, sway = 0) {
+      const cx = W * 0.5;
+      return cx + Math.sin(s * 2.3) * 24 * SCALE + sway * s * s;
+    }
+
+    function stemY(s) {
+      const bottom = H * 0.88;
+      const top = H * 0.42;
+      return lerp(bottom, top, s);
+    }
+
+    function addParticle(arr, x, y, color, group, delay = 0) {
+      arr.push({
+        x,
+        y,
+        color,
+        group,
+        delay,
+        size: rand(1.0, 2.5) * SCALE,
+        alpha: rand(0.55, 1.0),
+        twinkle: rand(0, Math.PI * 2),
+        glow: rand(8, 22) * SCALE,
+      });
+    }
+
+    function linePoints(x1, y1, x2, y2, count, jitter, color, group, delay = 0) {
+      const arr = [];
+      for (let i = 0; i < count; i++) {
+        const t = i / Math.max(1, count - 1);
+        addParticle(
+          arr,
+          lerp(x1, x2, t) + rand(-jitter, jitter) * SCALE,
+          lerp(y1, y2, t) + rand(-jitter, jitter) * SCALE,
+          color,
+          group,
+          delay
+        );
+      }
+      return arr;
+    }
+
+    function ellipseCloud(cx, cy, rx, ry, count, colorFn, group, delay = 0, rot = 0) {
+      const arr = [];
+      const cr = Math.cos(rot);
+      const sr = Math.sin(rot);
+
+      for (let i = 0; i < count; i++) {
+        const a = rand(0, Math.PI * 2);
+        const r = Math.sqrt(Math.random());
+        let x = Math.cos(a) * rx * r;
+        let y = Math.sin(a) * ry * r;
+
+        const pinch = 1 - Math.abs(x / rx) * 0.28;
+        y *= pinch;
+
+        const xr = x * cr - y * sr;
+        const yr = x * sr + y * cr;
+
+        addParticle(
+          arr,
+          cx + xr + rand(-2.5, 2.5) * SCALE,
+          cy + yr + rand(-2.5, 2.5) * SCALE,
+          colorFn(),
+          group,
+          delay
+        );
+      }
+      return arr;
+    }
+
+    function edgeEllipse(cx, cy, rx, ry, count, colorFn, group, delay = 0, rot = 0) {
+      const arr = [];
+      const cr = Math.cos(rot);
+      const sr = Math.sin(rot);
+
+      for (let i = 0; i < count; i++) {
+        const a = rand(0, Math.PI * 2);
+        const rr = rand(0.82, 1.05);
+        let x = Math.cos(a) * rx * rr;
+        let y = Math.sin(a) * ry * rr;
+
+        const xr = x * cr - y * sr;
+        const yr = x * sr + y * cr;
+
+        addParticle(
+          arr,
+          cx + xr + rand(-2.2, 2.2) * SCALE,
+          cy + yr + rand(-2.2, 2.2) * SCALE,
+          colorFn(),
+          group,
+          delay
+        );
+      }
+      return arr;
+    }
+
+    function spiralCore(cx, cy, turns, points, colorFn, group, delay = 0) {
+      const arr = [];
+      for (let i = 0; i < points; i++) {
+        const t = i / points;
+        const a = t * Math.PI * 2 * turns;
+        const r = t * 26 * SCALE;
+        addParticle(
+          arr,
+          cx + Math.cos(a) * r * 0.72 + rand(-1.4, 1.4) * SCALE,
+          cy + Math.sin(a) * r * 0.45 + rand(-1.4, 1.4) * SCALE,
+          colorFn(true),
+          group,
+          delay + t * 0.18
+        );
+      }
+      return arr;
+    }
+
+    function leafPoints(cx, cy, w, h, angle, count, groupDelay = 0) {
+      const arr = [];
+      const cr = Math.cos(angle);
+      const sr = Math.sin(angle);
+
+      function leafColor(mid = false) {
+        if (mid) return [190, 255, 165];
+        return [
+          rand(60, 120),
+          rand(150, 230),
+          rand(80, 130)
+        ];
+      }
+
+      for (let i = 0; i < count; i++) {
+        const t = rand(0, Math.PI * 2);
+        const r = Math.sqrt(Math.random());
+        let x = Math.cos(t) * w * r;
+        let y = Math.sin(t) * h * r * 0.72;
+
+        const pinch = 1 - Math.abs(x / w) * 0.36;
+        y *= pinch;
+
+        const xr = x * cr - y * sr;
+        const yr = x * sr + y * cr;
+
+        addParticle(
+          arr,
+          cx + xr + rand(-1.6, 1.6) * SCALE,
+          cy + yr + rand(-1.6, 1.6) * SCALE,
+          leafColor(false),
+          "leaf",
+          groupDelay + rand(0, 0.14)
+        );
+      }
+
+      const veinCount = Math.floor(count * 0.18);
+      for (let i = 0; i < veinCount; i++) {
+        const t = i / Math.max(1, veinCount - 1);
+        const vx = lerp(0, w * 0.88, t);
+        const vy = lerp(0, 0, t);
+
+        const xr = vx * cr - vy * sr;
+        const yr = vx * sr + vy * cr;
+
+        addParticle(
+          arr,
+          cx + xr,
+          cy + yr,
+          leafColor(true),
+          "leaf",
+          groupDelay + 0.05
+        );
+      }
+
+      return arr;
+    }
+
+    function roseColor(bright = false) {
+      if (bright) {
+        return [
+          rand(255, 255),
+          rand(120, 190),
+          rand(120, 170)
+        ];
+      }
+      return [
+        rand(210, 255),
+        rand(20, 90),
+        rand(40, 100)
+      ];
+    }
+
+    function buildRoseParticles(headX, headY) {
+      let arr = [];
+
+      // Miolo
+      arr = arr.concat(spiralCore(headX, headY - 42 * SCALE, 4.7, 240, roseColor, "bloom", 0.02));
+
+      // Pétalas internas
+      arr = arr.concat(ellipseCloud(headX, headY - 48 * SCALE, 34 * SCALE, 24 * SCALE, 170, roseColor, "bloom", 0.06, -0.06));
+      arr = arr.concat(edgeEllipse(headX, headY - 48 * SCALE, 36 * SCALE, 26 * SCALE, 60, roseColor, "bloom", 0.08, -0.06));
+
+      arr = arr.concat(ellipseCloud(headX - 32 * SCALE, headY - 16 * SCALE, 40 * SCALE, 25 * SCALE, 160, roseColor, "bloom", 0.12, -0.45));
+      arr = arr.concat(edgeEllipse(headX - 32 * SCALE, headY - 16 * SCALE, 42 * SCALE, 27 * SCALE, 55, roseColor, "bloom", 0.14, -0.45));
+
+      arr = arr.concat(ellipseCloud(headX + 32 * SCALE, headY - 16 * SCALE, 40 * SCALE, 25 * SCALE, 160, roseColor, "bloom", 0.12, 0.45));
+      arr = arr.concat(edgeEllipse(headX + 32 * SCALE, headY - 16 * SCALE, 42 * SCALE, 27 * SCALE, 55, roseColor, "bloom", 0.14, 0.45));
+
+      // Pétalas centrais
+      arr = arr.concat(ellipseCloud(headX - 56 * SCALE, headY + 28 * SCALE, 58 * SCALE, 34 * SCALE, 220, roseColor, "bloom", 0.24, -0.55));
+      arr = arr.concat(edgeEllipse(headX - 56 * SCALE, headY + 28 * SCALE, 60 * SCALE, 35 * SCALE, 75, roseColor, "bloom", 0.26, -0.55));
+
+      arr = arr.concat(ellipseCloud(headX + 56 * SCALE, headY + 28 * SCALE, 58 * SCALE, 34 * SCALE, 220, roseColor, "bloom", 0.24, 0.55));
+      arr = arr.concat(edgeEllipse(headX + 56 * SCALE, headY + 28 * SCALE, 60 * SCALE, 35 * SCALE, 75, roseColor, "bloom", 0.26, 0.55));
+
+      arr = arr.concat(ellipseCloud(headX, headY + 18 * SCALE, 72 * SCALE, 38 * SCALE, 260, roseColor, "bloom", 0.28, 0));
+      arr = arr.concat(edgeEllipse(headX, headY + 18 * SCALE, 75 * SCALE, 40 * SCALE, 84, roseColor, "bloom", 0.30, 0));
+
+      // Pétalas externas / base
+      arr = arr.concat(ellipseCloud(headX - 78 * SCALE, headY + 78 * SCALE, 62 * SCALE, 24 * SCALE, 180, roseColor, "bloom", 0.38, -0.28));
+      arr = arr.concat(edgeEllipse(headX - 78 * SCALE, headY + 78 * SCALE, 64 * SCALE, 26 * SCALE, 62, roseColor, "bloom", 0.40, -0.28));
+
+      arr = arr.concat(ellipseCloud(headX + 78 * SCALE, headY + 78 * SCALE, 62 * SCALE, 24 * SCALE, 180, roseColor, "bloom", 0.38, 0.28));
+      arr = arr.concat(edgeEllipse(headX + 78 * SCALE, headY + 78 * SCALE, 64 * SCALE, 26 * SCALE, 62, roseColor, "bloom", 0.40, 0.28));
+
+      arr = arr.concat(ellipseCloud(headX, headY + 84 * SCALE, 76 * SCALE, 24 * SCALE, 190, roseColor, "bloom", 0.44, 0));
+      arr = arr.concat(edgeEllipse(headX, headY + 84 * SCALE, 78 * SCALE, 26 * SCALE, 65, roseColor, "bloom", 0.46, 0));
+
+      // Sépalas
+      arr = arr.concat(linePoints(headX - 10 * SCALE, headY + 102 * SCALE, headX - 52 * SCALE, headY + 144 * SCALE, 34, 1.5, [110, 230, 120], "bloom", 0.40));
+      arr = arr.concat(linePoints(headX, headY + 108 * SCALE, headX, headY + 156 * SCALE, 26, 1.2, [120, 240, 130], "bloom", 0.42));
+      arr = arr.concat(linePoints(headX + 10 * SCALE, headY + 102 * SCALE, headX + 52 * SCALE, headY + 144 * SCALE, 34, 1.5, [110, 230, 120], "bloom", 0.40));
+
+      return arr;
+    }
+
+    function buildScene() {
+      particles = [];
+
+      // Poeira de fundo leve
+      for (let i = 0; i < 160; i++) {
+        particles.push({
+          x: rand(0, W),
+          y: rand(0, H),
+          color: [rand(120, 255), rand(30, 100), rand(60, 140)],
+          group: "dust",
+          delay: rand(0, 1),
+          size: rand(0.5, 1.6) * SCALE,
+          alpha: rand(0.05, 0.22),
+          twinkle: rand(0, Math.PI * 2),
+          glow: rand(5, 14) * SCALE
+        });
+      }
+
+      // Caule
+      const stemCount = 260;
+      for (let i = 0; i < stemCount; i++) {
+        const s = i / (stemCount - 1);
+        const x = stemX(s);
+        const y = stemY(s);
+
+        particles.push({
+          x,
+          y,
+          color: [rand(55, 120), rand(160, 225), rand(85, 125)],
+          group: "stem",
+          stemS: s,
+          delay: rand(0, 0.08),
+          size: rand(1.0, 2.2) * SCALE,
+          alpha: rand(0.55, 1),
+          twinkle: rand(0, Math.PI * 2),
+          glow: rand(7, 16) * SCALE
+        });
+      }
+
+      // Folhas
+      const leaf1x = stemX(0.34);
+      const leaf1y = stemY(0.34);
+
+      const leaf2x = stemX(0.58);
+      const leaf2y = stemY(0.58);
+
+      particles = particles.concat(leafPoints(leaf1x - 54 * SCALE, leaf1y + 12 * SCALE, 76 * SCALE, 26 * SCALE, -0.42, 210, 0.12));
+      particles = particles.concat(linePoints(leaf1x, leaf1y, leaf1x - 95 * SCALE, leaf1y + 24 * SCALE, 26, 1.2, [160, 240, 170], "leaf", 0.18));
+
+      particles = particles.concat(leafPoints(leaf2x + 62 * SCALE, leaf2y + 22 * SCALE, 84 * SCALE, 28 * SCALE, 0.34, 240, 0.18));
+      particles = particles.concat(linePoints(leaf2x, leaf2y + 4 * SCALE, leaf2x + 104 * SCALE, leaf2y + 32 * SCALE, 28, 1.2, [160, 240, 170], "leaf", 0.24));
+
+      // Cabeça da rosa
+      const headX = stemX(1);
+      const headY = stemY(1) - 10 * SCALE;
+      particles = particles.concat(buildRoseParticles(headX, headY));
+
+      startTime = performance.now();
+    }
+
+    function drawGlow(x, y, r, alpha, color) {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(${color[0]},${color[1]},${color[2]},${alpha})`);
+      g.addColorStop(0.45, `rgba(${color[0]},${color[1]},${color[2]},${alpha * 0.45})`);
+      g.addColorStop(1, `rgba(${color[0]},${color[1]},${color[2]},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function particleVisible(p, elapsed) {
+      if (p.group === "dust") return true;
+
+      if (p.group === "stem") {
+        const g = smoothstep(elapsed / STEM_DURATION);
+        return p.stemS <= g;
+      }
+
+      if (p.group === "leaf") {
+        const g = smoothstep((elapsed - 650) / 2200);
+        return g > p.delay;
+      }
+
+      if (p.group === "bloom") {
+        const g = smoothstep((elapsed - BLOOM_START) / BLOOM_DURATION);
+        return g > p.delay;
+      }
+
+      return true;
+    }
+
+    function particleProgress(p, elapsed) {
+      if (p.group === "dust") return 1;
+
+      if (p.group === "stem") {
+        const g = smoothstep(elapsed / STEM_DURATION);
+        return clamp((g - p.stemS) * 6, 0, 1);
+      }
+
+      if (p.group === "leaf") {
+        const g = smoothstep((elapsed - 650) / 2200);
+        return clamp((g - p.delay) * 3.8, 0, 1);
+      }
+
+      if (p.group === "bloom") {
+        const g = smoothstep((elapsed - BLOOM_START) / BLOOM_DURATION);
+        return clamp((g - p.delay) * 4.5, 0, 1);
+      }
+
+      return 1;
+    }
+
+    function render(now) {
+      const elapsed = now - startTime;
+
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+
+      // brilho geral de fundo
+      const bloomCenterX = W * 0.5;
+      const bloomCenterY = H * 0.40;
+      const bgGlow = ctx.createRadialGradient(bloomCenterX, bloomCenterY, 0, bloomCenterX, bloomCenterY, 260 * SCALE);
+      bgGlow.addColorStop(0, "rgba(120, 0, 0, 0.15)");
+      bgGlow.addColorStop(0.35, "rgba(80, 0, 0, 0.08)");
+      bgGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
+      ctx.fillStyle = bgGlow;
+      ctx.fillRect(0, 0, W, H);
+
+      for (const p of particles) {
+        if (!particleVisible(p, elapsed)) continue;
+
+        const prog = particleProgress(p, elapsed);
+        const eased = easeOutCubic(prog);
+        const pulse = 0.72 + 0.28 * Math.sin(now * 0.004 + p.twinkle);
+
+        let px = p.x;
+        let py = p.y;
+
+        if (p.group === "bloom" && prog < 1) {
+          // leve abertura vinda do centro da flor
+          const cx = stemX(1);
+          const cy = stemY(1) - 10 * SCALE;
+          px = lerp(cx, p.x, eased);
+          py = lerp(cy + 18 * SCALE, p.y, eased);
+        }
+
+        if (p.group === "leaf" && prog < 1) {
+          const sx = stemX(0.48);
+          const sy = stemY(0.48);
+          px = lerp(sx, p.x, eased);
+          py = lerp(sy, p.y, eased);
+        }
+
+        const alpha = p.alpha * (0.15 + 0.85 * eased);
+        const drawColor = p.color;
+
+        drawGlow(px, py, p.glow * (0.75 + 0.4 * pulse), alpha * 0.18, drawColor);
+        drawGlow(px, py, p.glow * 0.42, alpha * 0.22, drawColor);
+
+        ctx.fillStyle = `rgba(${drawColor[0]},${drawColor[1]},${drawColor[2]},${alpha})`;
+        ctx.beginPath();
+        ctx.arc(px, py, p.size * (0.9 + 0.25 * pulse), 0, Math.PI * 2);
+        ctx.fill();
+
+        if ((p.group === "bloom" || p.group === "dust") && eased > 0.8 && Math.random() < 0.008) {
+          const s = p.size * 3.2;
+          ctx.strokeStyle = `rgba(${Math.min(255, drawColor[0])},${Math.min(255, drawColor[1] + 30)},${Math.min(255, drawColor[2] + 30)},${alpha * 0.5})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(px - s, py);
+          ctx.lineTo(px + s, py);
+          ctx.moveTo(px, py - s);
+          ctx.lineTo(px, py + s);
+          ctx.stroke();
+        }
+      }
+
+      if (elapsed > RESTART_TOTAL) {
+        buildScene();
+      }
+
+      requestAnimationFrame(render);
+    }
+
+    canvas.addEventListener("click", () => {
+      buildScene();
+    });
+
+    window.addEventListener("resize", resize);
+
+    resize();
+    requestAnimationFrame(render);
+  </script>
+</body>
+  </html>
